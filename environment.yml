@@ -1,0 +1,13 @@
+name: PymcCosmography
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - arviz
+  - python=3
+  - astropy
+  - pymc=4
+  - seaborn
+  - ipykernel
+  - jupyterlab
+prefix: /Users/wfarr/miniconda3/envs/PymcCosmography
