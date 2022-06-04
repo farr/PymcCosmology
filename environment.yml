@@ -1,4 +1,4 @@
-name: PymcCosmography
+name: pymc_cosmology
 channels:
   - conda-forge
   - defaults
@@ -10,4 +10,5 @@ dependencies:
   - seaborn
   - ipykernel
   - jupyterlab
+  - pip
 prefix: /Users/wfarr/miniconda3/envs/PymcCosmography
