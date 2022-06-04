@@ -1,4 +1,4 @@
-# Cosmography with pymc
+# Cosmology with pymc
 
 Examples of using [pymc](https://www.pymc.io/welcome.html) to fit cosmology.
 
