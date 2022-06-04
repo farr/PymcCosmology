@@ -17,3 +17,21 @@ def interp(x, xs, ys):
 
     r = (x - xs[ind-1])/(xs[ind]-xs[ind-1])
     return r*ys[ind] + (1-r)*ys[ind-1]
+
+def md_sfr(z, a, z_p, c):
+    r"""Returns a parameterized version of the [Madau & Dickinson](https://arxiv.org/abs/1403.0007) SFR.
+    
+    .. math::
+        r(z) = \frac{\left(1 + z\right)^a}{1 + \left( \frac{1+z}{1+z_p}\right)^c}
+    """
+    opz = 1 + z
+    return opz**a / (1 + (opz/(1+z_p))**c)
+
+def trapz(ys, xs):
+    """Aesara implementation equivalent to `np.trapz` (note argument order)!"""
+    return 0.5*at.sum((xs[1:] - xs[:-1])*(ys[1:] + ys[:-1]))
+
+def cumtrapz(ys, xs):
+    """Aesara implementation equivalent to `cumtrapz` with initial 0 output."""
+    integrand = 0.5*(xs[1:] - xs[:-1])*(ys[:-1] + ys[1:])
+    return at.concatenate([at.as_tensor([0.0]), at.cumsum(integrand)])

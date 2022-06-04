@@ -2,8 +2,8 @@ import aesara.tensor as at
 import numpy as np
 import pymc as pm
 
-from .cosmology import Ez, dCs, dLs
-from .utils import interp
+from .cosmology import Ez, dCs, dLs, dVdz
+from .utils import interp, md_sfr, trapz
 
 def make_redshift_distance_gaussian_model(zs_obs, sigma_zs_obs, dls_obs, sigma_dls_obs, zmax=100, Nz=1024):
     r"""A model fitting Gaussian uncertainty measurements of redshift and
@@ -79,17 +79,114 @@ def make_redshift_distance_gaussian_model(zs_obs, sigma_zs_obs, dls_obs, sigma_d
 
         dCinterp = dH*dCs(zinterp, Om, w)
         dLinterp = dLs(zinterp, dCinterp)
-        dVCinterp = 4*np.pi*dCinterp*dCinterp*dH/Ez(zinterp, Om, w)
+        dVCinterp = dH*dH*dH*dVdz(zinterp, dCinterp, Om, w)
 
-        zden = (1+zinterp)**1.7 / (1 + ((1+zinterp)/(1+1.9))**5.6) * dVCinterp
-        norm = 0.5*at.sum((zinterp[1:] - zinterp[:-1])*(zden[1:] + zden[:-1]))
+        zden = md_sfr(zinterp, 2.7, 1.9, 5.6)*dVCinterp/(1+zinterp)
+        norm = trapz(zden, zinterp)
         log_norm = at.log(norm)
 
         z = pm.Uniform('z', 0, zmax, initval=abs(zs_obs), shape=zs_obs.shape[0])
-        pm.Potential('zprior', at.sum(1.7*at.log1p(z) - at.log1p(((1+z)/(1+1.9))**5.6) + at.log(interp(z, zinterp, dVCinterp)) - log_norm)) # SFR / (1+z)
+        pm.Potential('zprior', at.sum(at.log(interp(z, zinterp, zden)) - log_norm))
 
         dL = pm.Deterministic('dL', interp(z, zinterp, dLinterp))
 
         pm.Normal('z_likelihood', mu=z, sigma=sigma_zs_obs, observed=zs_obs)
         pm.Normal('dL_likelihood', mu=dL, sigma=sigma_dls_obs, observed=dls_obs)
     return model
+
+def make_chirp_mass_mf_cosmology_model(mc_dets, log_dls_obs, sigma_log_dls_obs, zmax=100, Nz=1024):
+    r"""Mass function cosmology model based on chirp mass and distance
+    measurements.
+
+    This model fits a Gaussian population (mean and s.d. are parameters) to the
+    observed chirp masses (assumed to be measured without uncertainty, since it
+    is appropriate for neutron stars where the chirp mass is measured to ppt
+    uncertainty or better) and a parameterized [Madau & Dickinson
+    (2014)](https://arxiv.org/abs/1403.0007) merger rate to observations of
+    luminosity distance (assumed log-normally distributed).
+
+    Parameters
+    ----------
+    mc_dets : real array
+        The detector-frame chirp masses (assumed to be measured without
+        uncertainty).
+    log_dls_obs : real array
+        The log of the observed luminosity distances (in Gpc).
+    sigma_log_dls_obs : real array
+        The uncertainty on the observed log dLs.
+    zmax=100 : real
+        The maximum redshift.
+    Nz=1024 : int
+        The number of steps (uniform in `log(1+z)`) in the redshift grid for
+        interpolating cosmology.
+
+    Returns
+    -------
+    A pymc model for this measurement.  Parameters stored in the chain include 
+
+    mc_mc : real 
+        The population mean of the chirp mass (source frame).
+    sigma_mc : real 
+        The population s.d. of the chirp mass (source frame).
+    a : real 
+        The low-redshift M-D evolution exponent.
+    z_p : real 
+        The (approximate) peak redshift in the M-D merger rate.
+    c : real 
+        The exponent of `1+z` in the M-D denominator.
+    h : real 
+        Dimensionless Hubble parameter.
+    Om : real 
+        Dimensionless matter density
+    w : real 
+        Dark energy equation of state.
+    Ode : real 
+        Dimensionless dark energy density.
+    dH : real
+        Hubble distance (Gpc).
+    z : real array 
+        The inferred true redshifts of each source.
+    dL : real array
+        The inferred true luminosity distance to each source (Gpc).    
+    """
+    mc_dets = np.atleast_1d(mc_dets)
+    nobs = mc_dets.shape[0]
+
+    zinterp = np.expm1(np.linspace(np.log(1), np.log1p(zmax), Nz))
+
+    with pm.model() as model:
+        mu_mc = pm.Normal('mu_mc', 1.2, 0.5)
+        sigma_mc = pm.HalfNormal('sigma_mc', 0.15)
+
+        a = pm.Bound('a', pm.Normal.dist(1.7, 0.5), lower=0.7, upper=2.7)
+        z_p = pm.Bound('z_p', pm.Normal.dist(1.9, 0.5), lower=0.9, upper=2.9)
+        c = pm.Bound('c', pm.Normal.dist(5.6, 0.5), lower=4.6, upper=6.6)
+
+        h = pm.LogNormal('h', np.log(0.7), 0.2)
+        Om = pm.Bound('Om', pm.Normal.dist(0.3, 0.1), lower=0, upper=1)
+        w = pm.Normal('w', -1, 0.2)
+        Ode = pm.Deterministic('Ode', 1-Om)
+        dH = pm.Deterministic('dH', 2.99792 / h) # Gpc
+
+        dCinterp = dCs(zinterp, Om, w)
+        dLinterp = dLs(zinterp, dCs)
+        dVinterp = dVdz(zinterp, dCs, Om, w)
+
+        dCinterp = dH*dCinterp
+        dLinterp = dH*dLinterp
+        dVinterp = dH*dH*dH*dVinterp
+
+        zdeninterp = md_sfr(zinterp, a, z_p, c)*dVinterp/(1+zinterp)
+        log_znorm = at.log(trapz(zdeninterp, zinterp))
+
+        # z follows M-D SFR
+        z = pm.Uniform('z', 0, zmax, shape=nobs)
+        pm.Potential('zprior', at.sum(at.log(interp(z, zinterp, zdeninterp) - log_znorm)))
+
+        mc = pm.Deterministic('mc', mc_dets / (1 + z))
+        pm.Potential('mcprior', at.sum(pm.logp(pm.Normal.dist(mu_mc, sigma_mc), mc)))
+        pm.Potential('mcjac', at.sum(-at.log1p(z))) # Comes from integrating over delta-function likelihood for mc
+
+        dL = pm.Deterministic('dL', interp(z, zinterp, dLinterp))
+
+        pm.Normal('dl_likelihood', at.log(dL), sigma_log_dls_obs, observed=log_dls_obs)

@@ -1,4 +1,6 @@
 import aesara.tensor as at
+import numpy as np
+from .utils import cumtrapz
 
 def Ez(z, Om, w):
     """Aesara definition of the cosmological integrand for a flat wCDM cosmology.
@@ -33,10 +35,8 @@ def dCs(zs, Om, w):
     w : real
         Dark energy equation of state parameter.    
     """
-    dz = zs[1:] - zs[:-1]
     fz = 1/Ez(zs, Om, w)
-    I = 0.5*dz*(fz[:-1] + fz[1:])
-    return at.concatenate([at.as_tensor([0.0]), at.cumsum(I)])
+    return cumtrapz(fz, zs)
 
 def dLs(zs, dCs):
     """Luminosity distance on the grid `zs` with previously evaluated comoving distances.
@@ -51,3 +51,25 @@ def dLs(zs, dCs):
         Comoving distances on the grid of redshifts.
     """
     return dCs*(1+zs)
+
+def dVdz(zs, dCs, Om, w):
+    """Evaluate the (unitless) differential comoving volume on the grid `zs`.
+    
+    See [Hogg (1999)](https://arxiv.org/abs/astro-ph/9905116).
+
+    Parameters
+    ----------
+    zs : real array
+        The redshifts at which the comoving distance should be calculated. These
+        must be sufficiently dense that a trapezoidal approximation to the
+        integral is sufficiently accurate.  A common choice is to choose them
+        uniformly in `log(1+z)` via `zs = np.expm1(np.linspace(np.log(1),
+        np.log(1+zmax), Nz))`
+    dCs : real array
+        The (unitless) comoving distances at the redshift grid.
+    Om : real
+        Dimensionless matter density at the present day.
+    w : real
+        Dark energy equation of state parameter.  
+    """
+    return 4*np.pi*dCs*dCs/Ez(zs, Om, w)
