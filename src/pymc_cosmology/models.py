@@ -148,45 +148,65 @@ def make_chirp_mass_mf_cosmology_model(mc_dets, log_dls_obs, sigma_log_dls_obs, 
         The inferred true redshifts of each source.
     dL : real array
         The inferred true luminosity distance to each source (Gpc).    
+
+    Implementation Notes
+    --------------------
+    In addition to assuming that the chirp mass measurements presented are
+    perfectly accurate, and that the luminosity distance measurements have a
+    log-normal distribution, the model is written in such a way that it samples
+    much more efficiently when the uncertainties on the dL measurements are very
+    small (i.e. the posterior is dominated by the dL likelihood function, not
+    the M-D redshift prior).
+
+    We also sample in the *physical* matter densities (`om = Om*h*h`) and dark
+    energy densities instead of `h` and `Om`, because these parameters are very
+    correlated (this is the combination that appears in the integrand for the
+    comoving distance).
     """
     mc_dets = np.atleast_1d(mc_dets)
     nobs = mc_dets.shape[0]
 
     zinterp = np.expm1(np.linspace(np.log(1), np.log1p(zmax), Nz))
 
-    with pm.model() as model:
+    with pm.Model() as model:
         mu_mc = pm.Normal('mu_mc', 1.2, 0.5)
         sigma_mc = pm.HalfNormal('sigma_mc', 0.15)
 
-        a = pm.Bound('a', pm.Normal.dist(1.7, 0.5), lower=0.7, upper=2.7)
+        a = pm.Bound('a', pm.Normal.dist(2.7, 0.5), lower=1.7, upper=3.7)
         z_p = pm.Bound('z_p', pm.Normal.dist(1.9, 0.5), lower=0.9, upper=2.9)
         c = pm.Bound('c', pm.Normal.dist(5.6, 0.5), lower=4.6, upper=6.6)
 
-        h = pm.LogNormal('h', np.log(0.7), 0.2)
-        Om = pm.Bound('Om', pm.Normal.dist(0.3, 0.1), lower=0, upper=1)
+        om = pm.LogNormal('om', np.log(0.7*0.7*0.3), 0.1)
+        ode = pm.LogNormal('ode', np.log(0.7*0.7*0.7), 0.1)
+        h = pm.Deterministic('h', at.sqrt(om+ode))
+        Om = pm.Deterministic('Om', om/(h*h))
         w = pm.Normal('w', -1, 0.2)
         Ode = pm.Deterministic('Ode', 1-Om)
         dH = pm.Deterministic('dH', 2.99792 / h) # Gpc
 
         dCinterp = dCs(zinterp, Om, w)
-        dLinterp = dLs(zinterp, dCs)
-        dVinterp = dVdz(zinterp, dCs, Om, w)
+        dLinterp = dLs(zinterp, dCinterp)
+        dVinterp = dVdz(zinterp, dCinterp, Om, w)
 
         dCinterp = dH*dCinterp
         dLinterp = dH*dLinterp
         dVinterp = dH*dH*dH*dVinterp
 
+        ddLdzinterp = dCinterp + dH*(1+zinterp)/Ez(zinterp, Om, w)
         zdeninterp = md_sfr(zinterp, a, z_p, c)*dVinterp/(1+zinterp)
         log_znorm = at.log(trapz(zdeninterp, zinterp))
 
-        # z follows M-D SFR
-        z = pm.Uniform('z', 0, zmax, shape=nobs)
-        pm.Potential('zprior', at.sum(at.log(interp(z, zinterp, zdeninterp) - log_znorm)))
+        log_d_unit = pm.Flat('log_dl_unit', shape=nobs)
+        dL = pm.Deterministic('dL', at.exp(log_dls_obs + sigma_log_dls_obs*log_d_unit))
+        z = pm.Deterministic('z', interp(dL, dLinterp, zinterp))
+
+        # z follows M-D SFR; since we sample in `log_dl_unit`, we need p(z) d(z)/d(dL) d(dL)/d(log_dl_unit) = p(z) / d(dL)/dz d(dL)/d(log_dl_unit) = p(z) / d(dL)/dz * sigma_log_dl*dL
+        pm.Potential('zprior', at.sum(at.log(interp(z, zinterp, zdeninterp)) - log_znorm))
+        pm.Potential('zjac', at.sum(-at.log(interp(z, zinterp, ddLdzinterp) + at.log(dL) + at.log(sigma_log_dls_obs))))
 
         mc = pm.Deterministic('mc', mc_dets / (1 + z))
         pm.Potential('mcprior', at.sum(pm.logp(pm.Normal.dist(mu_mc, sigma_mc), mc)))
         pm.Potential('mcjac', at.sum(-at.log1p(z))) # Comes from integrating over delta-function likelihood for mc
 
-        dL = pm.Deterministic('dL', interp(z, zinterp, dLinterp))
-
         pm.Normal('dl_likelihood', at.log(dL), sigma_log_dls_obs, observed=log_dls_obs)
+    return model
